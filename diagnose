@@ -1,0 +1,216 @@
+#!/usr/bin/env python
+
+# This script helps figure out whether various services are running and healthy.
+
+
+import socket
+import subprocess
+import sys
+from datetime import datetime
+
+import json
+import pprint
+
+# Originally used these for http
+import urllib
+import urllib2
+
+# now using this for http
+import requests
+
+# Parse command line arguments
+import argparse
+parser = argparse.ArgumentParser(description='Diagnose potential problems for Ripple integration.')
+parser.add_argument('hostname', type=str, nargs='?', default='localhost', help='Name or address of machine to diagnose')
+args = parser.parse_args()
+
+HOST = args.hostname
+
+RIPPLED_WEBSOCKET_PORT = 5006
+RIPPLED_RPC_PORT = 5005
+RIPPLED_RPC_PROTOCOL = 'https'
+rippledEnabled = False
+
+RIPPLE_REST_PORT = 5990
+
+RIPPLE_CONNECT_PORT = 5000
+
+# Check what time the scan started
+t1 = datetime.now()
+
+try :
+
+    # Print a nice banner with information on which host we are about to scan
+    print "=" * 60
+    print "Diagnose (a2fa6fb) for {} ".format(HOST)
+    print "-" * 60
+
+    # Tests to run locally (cannot be run remotely)
+    if (HOST == 'localhost') :
+        # https://help.ubuntu.com/community/CheckingYourUbuntuVersion
+        print subprocess.check_output(["lsb_release", "-a"])
+
+        # Test firewall
+        print ""
+        print "=" * 60
+        print "Testing firewall".format(HOST)
+        print "-" * 60
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        port = 51235
+        result = sock.connect_ex(('r.ripple.com', port))
+        if result == 0:
+            print "Port {}: \t Reached r.ripple.com:{}".format(port, port)
+        else :
+            print "Port {}: \t Not open! Possible firewall issue!".format(port)
+        sock.close()
+
+    # Following tests can be run remotely or locally.
+
+    # Test ports
+    print ""
+    print "=" * 60
+    print "Testing {} ports".format(HOST)
+    print "-" * 60
+
+    # Ports to check
+    portlist = [
+        {'port': RIPPLED_RPC_PORT, 'desc': 'rippled rpc_port'},
+        {'port': RIPPLED_WEBSOCKET_PORT, 'desc': 'rippled websocket_public_port'},
+        {'port': RIPPLE_REST_PORT, 'desc': 'ripple-rest'},
+        {'port': RIPPLE_CONNECT_PORT, 'desc': 'ripple-connect'},
+    ]
+
+    for portdata in portlist :
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        port = portdata['port']
+        result = sock.connect_ex((HOST, port))
+        if result == 0:
+            print "Port {}: \t Open      \t {}".format(port, portdata['desc'])
+
+            if port == RIPPLED_RPC_PORT:
+                rippledEnabled = True
+
+        else :
+            print "Port {}: \t Not reachable \t {}".format(port, portdata['desc'])
+        sock.close()
+
+
+    # If rippled appears to be running, get info.
+    if rippledEnabled :
+        url = RIPPLED_RPC_PROTOCOL + '://' + HOST + ':' + str(RIPPLED_RPC_PORT)
+        print ""
+        print "=" * 60
+        print "Testing rippled on {}".format(url)
+        print "-" * 60
+
+        values = {
+            'method' : 'server_info',
+            'params' : [],
+        }
+        headers = {
+            "User-Agent" : '',
+            "Content-Type" : "application/json",
+        }
+
+        r = requests.post(url, data=json.dumps(values), verify=False)
+        data = r.json()
+
+        # print json.dumps(data, indent=4) # debug
+
+        if (data['result']['status'] == 'success') :
+            server = data['result']['info']
+            print "build_version:      \t", server['build_version']
+            print "server_state:       \t", server['server_state']
+            print "peers:              \t", server['peers']
+            print "complete_ledgers:   \t", server['complete_ledgers']
+            if server['validated_ledger'] :
+                print "validated_ledger seq:\t", server['validated_ledger']['seq']
+                print "validated_ledger age:\t", server['validated_ledger']['age']
+
+        else :
+            print "Failed to get rippled server_info!"
+
+
+        # get_counts
+        values = {
+            'method' : 'get_counts',
+            'params' : [],
+        }
+        headers = {
+            "User-Agent" : '',
+            "Content-Type" : "application/json",
+        }
+
+        r = requests.post(url, data=json.dumps(values), verify=False)
+        data = r.json()
+
+        #print json.dumps(data, indent=4) # debug
+        if (data['result']['status'] == 'success') :
+            print "uptime:             \t", data['result']['uptime']
+
+        # End get_counts
+
+
+    # end if rippled running.
+
+    # Check ripple-rest
+    port = 5990
+    protocol = "http"
+    print ""
+    print "=" * 60
+    print "Testing ripple-rest on {}://{}:{}".format(protocol,HOST,port)
+    print "-" * 60
+
+    try :
+        r = urllib2.urlopen(protocol + '://' + HOST + ':' + str(port) + '/v1/server')
+        data = json.load(r);
+
+        if data['success'] :
+            server = data['rippled_server_status']
+            # print json.dumps(server, indent=4) # debug
+
+            print "rippled_server_url: \t", data['rippled_server_url']
+            print "build_version:      \t", server['build_version']
+            print "server_state:       \t", server['server_state']
+            print "peers:              \t", server['peers']
+            print "complete_ledgers:   \t", server['complete_ledgers']
+            if server['validated_ledger'] :
+                print "validated_ledger seq:\t", server['validated_ledger']['seq']
+                #print "validated_ledger age:\t", server['validated_ledger']['age'] <- rest does not return this.
+
+        else :
+            print "Failed to get ripple-rest server status!"
+    except urllib2.URLError, err :
+        print "ripple-rest is not reachable. \t", err.reason
+    except urllib2.HTTPError, err :
+        print "ripple-rest is not reachable. \t", err.reason
+
+except KeyboardInterrupt:
+    print "You pressed Ctrl+C"
+    sys.exit(1)
+
+except socket.gaierror:
+    print 'Hostname could not be resolved. Exiting'
+    sys.exit(1)
+
+except socket.error:
+    print "Couldn't connect to server"
+    sys.exit(1)
+
+except urllib2.URLError as e:
+    print "Error requesting URL:"
+    print e
+    sys.exit(1)
+
+# Checking the time again
+t2 = datetime.now()
+
+# Calculates the difference of time, to see how long it took to run the script
+total =  t2 - t1
+
+# Printing the information to screen
+print ""
+print "=" * 60
+print 'Diagnose completed in: ', total
+print "-" * 60
