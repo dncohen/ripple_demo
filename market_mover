@@ -40,7 +40,6 @@ rest = rest_list.split("\n")
 # Sanity check that rest is reachable.
 try:
     resp = requests.get(rest[0] + '/v1/server')
-    pp(resp.json())
 except Exception as e:
     #pp(e)
     fatal("Could not reach ripple-rest at {0}.".format(rest[0]))
@@ -78,12 +77,11 @@ for wallet in wallets:
     books = book_list.split("\n")
 
     for book in books:
-        print("book is " + book)
         keys = ['base', 'counter']
         currencies = {}
         amounts = {}
         # base comes first, i.e. base/counter.
-        pp(book)
+
         base, counter = book.split('/')
         currency_strings = {'base': base, 'counter': counter}
         # currency_parts holds [currency, issuer] array
@@ -101,7 +99,6 @@ for wallet in wallets:
                 issuer = False
 
             for balance in balances['balances']:
-                pp(balance)
                 if (balance['currency'] == currency):
                     if not issuer:
                         # Counterparty not specified in config.  Assume first trustline that matches.
@@ -195,7 +192,11 @@ for wallet in wallets:
         spread_target = float(config.get(config_market, 'spread_target'))
         spread = new_price * spread_target
 
-        # TODO: maybe add volatility to spread, if that might make market more realistic
+        # Spread volatility to randomly alter spread each time.
+        spread_volatility = float(config.get(config_market, 'spread_volatility'))
+        if spread_volatility > 0:
+            volatility = random.uniform(-1 * spread_volatility, spread_volatility)
+            spread += volatility * spread_target
 
         # Old way For spread, use same as recent order.
         #spread = float(recent_ask['price']['value']) - float(recent_bid['price']['value'])
@@ -208,6 +209,16 @@ for wallet in wallets:
         # For volume, use configuration
         sell_amount = float(config.get(currency_parts['base'][0], 'sell_volume_per_order'))
         buy_amount = float(config.get(currency_parts['base'][0], 'buy_volume_per_order'))
+
+        # allow volitility in order amounts.
+        volume_volatility = float(config.get(currency_parts['base'][0], 'volume_volatility'))
+        if volume_volatility > 0:
+            volatility = random.uniform(-1 * volume_volatility, volume_volatility)
+            sell_amount += sell_amount * volatility
+
+            volatility = random.uniform(-1 * volume_volatility, volume_volatility)
+            buy_amount += buy_amount * volatility
+
 
 
         # At last we are ready to place a buy and a sell order.
