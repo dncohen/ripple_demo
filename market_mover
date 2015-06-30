@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+
+# market_mover makes incremental changes in ripple order books.  Call repeatedly, i.e. with `watch market_mover` to make orders appear and FX rates change during a demonstration or test.
+
+import configparser
+import json
+import sys, os
+import pprint
+import random
+
+import concurrent.futures
+import requests
+
+def warning(*objs):
+    print("WARNING: ", *objs, file=sys.stderr)
+
+def fatal(*objs):
+    print("FATAL: ", *objs, file=sys.stderr)
+    sys.exit(1)
+
+def pp(*objs):
+    pprint.pprint(*objs)
+
+
+# use a config file based on executable name.
+my_name = os.path.split(sys.argv[0])[-1]
+config_file = my_name + '.conf'
+config = configparser.ConfigParser()
+config.read(config_file)
+
+# No data needed, uses ripple ledger
+#data_file = os.path.join(config.get(my_name, 'data-dir'), my_name + '.data')
+#data = configparser.ConfigParser()
+#data.read(data_file)
+
+
+rest_list = config.get(my_name, 'ripple-rest')
+rest = rest_list.split("\n")
+
+# Sanity check that rest is reachable.
+try:
+    resp = requests.get(rest[0] + '/v1/server')
+    pp(resp.json())
+except Exception as e:
+    #pp(e)
+    fatal("Could not reach ripple-rest at {0}.".format(rest[0]))
+
+
+#import argparse
+
+#parser = argparse.ArgumentParser(description='Notify ripple transactions.')
+#parser.add_argument('wallets', type=str, nargs='*')
+
+#args = parser.parse_args()
+#print(args.wallets)
+
+wallet_list = config.get(my_name, 'wallet')
+wallets = wallet_list.split("\n")
+
+for wallet in wallets:
+
+    try:
+        # Balances helps qualify currencies, and compute account reserve.
+        url = rest[0] + '/v1/accounts/' + wallet + '/balances'
+        resp = requests.get(url)
+        balances = resp.json()
+
+        # Orders helps compute account reserve, and cancel orders.
+        url = rest[0] + '/v1/accounts/' + wallet + '/orders'
+        resp = requests.get(url)
+        orders = resp.json()
+
+    except Exception as e:
+        pp(e)
+        fatal("Could not fetch {0}.".format(url))
+
+    book_list = config.get(my_name, 'book')
+    books = book_list.split("\n")
+
+    for book in books:
+        print("book is " + book)
+        keys = ['base', 'counter']
+        currencies = {}
+        amounts = {}
+        # base comes first, i.e. base/counter.
+        pp(book)
+        base, counter = book.split('/')
+        currency_strings = {'base': base, 'counter': counter}
+        # currency_parts holds [currency, issuer] array
+        currency_parts = {'base': [], 'counter': []}
+
+        for key in keys:
+            currency_string = currency_strings[key] # from config file
+            currency_parts[key] = currency_string.split('+')
+            currency = currency_parts[key][0]
+            if len(currency_parts[key]) > 1:
+                # Fully qualified in config file.
+                issuer = currency_parts[key][1]
+            else:
+                # Not fully qualified, determine issuer from balances (trust lines).
+                issuer = False
+
+            for balance in balances['balances']:
+                pp(balance)
+                if (balance['currency'] == currency):
+                    if not issuer:
+                        # Counterparty not specified in config.  Assume first trustline that matches.
+                        issuer = balance['counterparty']
+
+                    if (balance['counterparty'] == issuer):
+                        currencies[key] = currency + '+' + issuer
+                        amounts[currencies[key]] = balance['value']
+                        currency_parts[key].append(issuer)
+
+            if (currencies[key]):
+                print("Using {0} currency {1}. Balance of {2} available for trading.".format(key, currencies[key], amounts[currencies[key]]))
+            else:
+                fatal("Could not use {0} currency {1}!".format(key, currency_string))
+
+        # Here we have figured out which base/counter pair we are trading.
+
+        try:
+            # Orders helps compute account reserve, and cancel orders.
+            url = rest[0] + '/v1/accounts/' + wallet + '/order_book/' + currencies['base'] + '/' + currencies['counter']
+            resp = requests.get(url)
+            order_book = resp.json()
+
+            # We don't need "reverse" book, order book has both bids and asks.
+            #url = rest[0] + '/v1/accounts/' + wallet + '/order_book/' + currencies['counter'] + '/' + currencies['base']
+            #resp = requests.get(url)
+            #reverse_book = resp.json()
+
+            #print("Best bid:")
+            #pp(order_book['bids'][0]['price'])
+            #print("Best ask:")
+            #pp(order_book['asks'][0]['price'])
+
+        except Exception as e:
+            pp(e)
+            fatal("Could not fetch {0}.".format(url))
+
+
+        # Here, we have the existing order book.  We want to add new orders based on randomly walking from the current price.
+
+        top_bid = order_book['bids'][0]
+        top_ask = order_book['asks'][0]
+
+        avg_price = (float(top_bid['price']['value']) + float(top_ask['price']['value'])) / 2
+
+        # Get orders placed by us, in the chronological order we placed them.
+        orders_by_seq = {'bids': {}, 'asks': {}}
+        ordered_seq = {'bids': {}, 'asks': {}}
+        for bid_or_ask in ['bids', 'asks']:
+            for order in order_book[bid_or_ask]:
+                if (order['order_maker'] == wallet):
+                    # We placed this order
+                    orders_by_seq[bid_or_ask][order['sequence']] = order
+            ordered_seq[bid_or_ask] = sorted(orders_by_seq[bid_or_ask], reverse=True)
+
+        # Learn what we considered a fair price last time we placed an order pair.
+        recent_bid = orders_by_seq['bids'][ordered_seq['bids'][0]]
+        recent_ask = orders_by_seq['asks'][ordered_seq['asks'][0]]
+        recent_price = (float(recent_bid['price']['value']) +
+                        float(recent_ask['price']['value'])) / 2
+
+        # Calculate a random FX fluxuation, within config parameters.
+        config_market = currency_parts['base'][0] + '/' + currency_parts['counter'][0]
+        fx_target = float(config.get(config_market, 'fx_target'))
+        fx_volatility = float(config.get(config_market, 'fx_volatility'))
+
+        volatility_floor = -1 * fx_volatility
+        volatility_ceil = fx_volatility
+
+        if (recent_price < (fx_target - (fx_target * fx_volatility))):
+            # make sure we increase the current price
+            volatility_floor = 0
+            print("Current FX rate {0} is too low compared to target FX rate {1}.  Increasing FX rate.".format(recent_price, fx_target))
+        elif (recent_price > (fx_target + (fx_target * fx_volatility))):
+            # make sure we decrease the current price
+            volatility_ceil = 0
+            print("Current FX rate {0} is too high compared to target FX rate {1}.  Decreasing FX rate.".format(recent_price, fx_target))
+        else:
+            print("Adjusing current FX rate {0} randomly.".format(recent_price))
+
+        # Simply move the price up or down a random percentage.
+        random_change = random.uniform(volatility_floor, volatility_ceil)
+        print("random_change: {0}".format(random_change))
+        new_price = recent_price + (recent_price * random_change)
+        print("Change price to {0}, was {1}".format(new_price, recent_price))
+
+        if (new_price < 0):
+            # This implies the math above is bad
+            fatal("Trying to make a negative offer.")
+
+        spread_target = float(config.get(config_market, 'spread_target'))
+        spread = new_price * spread_target
+
+        # TODO: maybe add volatility to spread, if that might make market more realistic
+
+        # Old way For spread, use same as recent order.
+        #spread = float(recent_ask['price']['value']) - float(recent_bid['price']['value'])
+
+        if spread < 0 or (new_price - (new_price * (spread / 2))) < 0:
+            fatal("Spread sanity check failed!")
+
+        print("Spread: {0}".format(spread))
+
+        # For volume, use configuration
+        sell_amount = float(config.get(currency_parts['base'][0], 'sell_volume_per_order'))
+        buy_amount = float(config.get(currency_parts['base'][0], 'buy_volume_per_order'))
+
+
+        # At last we are ready to place a buy and a sell order.
+        try:
+            url = rest[0] + '/v1/accounts/' + wallet + '/orders?submit=false'
+            headers = {'content-type': 'application/json'}
+            sell_payload = {
+                'order': {
+                    'type': 'sell',
+                    'taker_pays': {
+                        'currency': currency_parts['counter'][0],
+                        'counterparty': currency_parts['counter'][1],
+                        # sell high
+                        'value': str(sell_amount * (new_price + (spread / 2)))
+                    },
+                    'taker_gets': {
+                        'currency': currency_parts['base'][0],
+                        'counterparty': currency_parts['base'][1],
+                        'value': str(sell_amount)
+                    }
+                }
+            }
+
+            resp = requests.post(url, data=json.dumps(sell_payload), headers=headers)
+            sell_resp = resp.json()
+
+            buy_payload = {
+                'order': {
+                    'type': 'buy',
+                    'taker_gets': {
+                        'currency': currency_parts['counter'][0],
+                        'counterparty': currency_parts['counter'][1],
+                        # Buy low
+                        'value': str(buy_amount * (new_price - (spread / 2)))
+                    },
+                    'taker_pays': {
+                        'currency': currency_parts['base'][0],
+                        'counterparty': currency_parts['base'][1],
+                        'value': str(buy_amount)
+                    }
+                }
+            }
+
+            resp = requests.post(url, data=json.dumps(buy_payload), headers=headers)
+            buy_resp = resp.json()
+
+
+            # Order transactions support OfferSequence, in order to cancel a previous order when placing a new one.  We use this feature to limit how large our order book grows.
+            # A sell is an ask, a buy is a bid.
+            concurrent_sell_orders = int(config.get(wallet, 'concurrent_sell_orders'))
+            if (len(ordered_seq['asks']) > concurrent_sell_orders):
+                sell_resp['tx_json']['OfferSequence'] = ordered_seq['asks'][-1]
+                print("More than {0} sell offers on the books.  Next sell order will replace prior order #{1}.".format(concurrent_sell_orders, ordered_seq['asks'][-1]))
+
+            concurrent_buy_orders = int(config.get(wallet, 'concurrent_buy_orders'))
+            if (len(ordered_seq['bids']) > concurrent_buy_orders):
+                buy_resp['tx_json']['OfferSequence'] = ordered_seq['bids'][-1]
+                print("More than {0} buy offers on the books.  Next buy order will replace prior order #{1}.".format(concurrent_buy_orders, ordered_seq['bids'][-1]))
+
+
+
+            # Uncomment for debugging, will stop here before submitting tx.
+            #fatal("Stopping before submitting tx!")
+
+
+            # Here, we have tx_json for both a buy and sell order
+            # TODO: confirm Fee is acceptable.
+
+            # Correct the sequence numbers so that one order follows the other.
+            buy_resp['tx_json']['Sequence'] = sell_resp['tx_json']['Sequence'] + 1
+
+            # Sign transactions with secret
+            try:
+                secret = config.get(wallet, 'secret')
+            except Exception as e:
+                fatal("A secret is required for wallet {0} in order to place orders.".format(wallet))
+
+            for tx_resp in [sell_resp, buy_resp]:
+                url = rest[0] + '/v1/transaction/sign'
+                payload = {
+                    'secret': secret,
+                    'tx_json': tx_resp['tx_json']
+                }
+
+                resp = requests.post(url, data=json.dumps(payload), headers=headers)
+                sign_resp = resp.json()
+                if not sign_resp['success']:
+                    pp(sign_resp)
+                    fatal("Could not sign Ripple transaction!")
+
+                url = rest[0] + '/v1/transaction/submit'
+                payload = {
+                    'tx_blob': sign_resp['tx_blob']
+                }
+                resp = requests.post(url, data=json.dumps(payload), headers=headers)
+                submit_resp = resp.json()
+
+                if not submit_resp['success']:
+                    pp(submit_resp)
+                    fatal("Could not submit signed Ripple transaction!")
+
+            # Here, both buy and sell orders have been submitted!
+
+            # TODO display summary.
+
+        except Exception as e:
+            pp(e)
+            fatal("Could not submit order via {0}.".format(url))
