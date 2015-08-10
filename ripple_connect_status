@@ -1,0 +1,150 @@
+#!/usr/bin/env python
+
+# This script displays a summary of Ripple Connect configuration.
+
+import socket
+import subprocess
+import sys, os
+from datetime import datetime
+
+import json
+import pprint
+
+# Originally used these for http
+import urllib
+import urllib2
+
+# now using this for http
+import requests
+
+# Parse command line arguments
+import argparse
+parser = argparse.ArgumentParser(description='Display summary of Ripple Connect configuration.')
+parser.add_argument('config', type=str, nargs='?', default='/opt/ripple-connect', help='Directory where Ripple Connect configuration is found.')
+args = parser.parse_args()
+
+CONFIG_DIR = args.config
+
+# Check what time the scan started
+t1 = datetime.now()
+
+try :
+
+    # Print a nice banner with information on which host we are about to scan
+    print "=" * 60
+    print "Ripple Connect Configuration"
+    print "-" * 60
+
+    filename = os.path.join(CONFIG_DIR, 'entities.json')
+    with open(filename) as data_file:
+        entities_json = json.load(data_file)
+    #pprint.pprint(entities_json)
+        
+    filename = os.path.join(CONFIG_DIR, 'config.json')
+    with open(filename) as data_file:
+        config_json = json.load(data_file)
+    #pprint.pprint(config_json)
+
+    for hot_wallet in entities_json['hot_wallets']:
+        hot = hot_wallet['address']
+
+        # Test hot wallet balance
+        url = config_json['ripple_rest_api'] + 'v1/accounts/' + hot + '/trustlines'
+        #print(url)
+        r = requests.get(url, verify=False)
+        trustlines = r.json()
+
+        #pprint.pprint(trustlines)
+
+        for cold_wallet in entities_json['cold_wallets']:
+            # Keep a list of all currencies issued by this cold wallet (to the hot wallet).
+            currencies = []
+
+            #pprint.pprint(cold_wallet)
+            cold = cold_wallet['address']
+            print "=" * 60
+            print "Cold Wallet {}".format(cold)
+            print "Hot Wallet {}".format(hot)
+            print "-" * 60
+
+            for trustline in trustlines['trustlines']:
+                if (trustline['counterparty'] == cold):
+                    currencies.append(trustline['currency'])
+
+                    # Determine hot wallet liquidity for the cold wallet issued currency.
+                    url = config_json['ripple_rest_api'] + 'v1/accounts/' + hot + '/balances?counterparty=' + trustline['counterparty'] + '&currency=' + trustline['currency']
+                    #print(url)
+                    r = requests.get(url, verify=False)
+                    balances = r.json()
+
+                    #pprint.pprint(balances)
+                    balance = balances['balances'][0]
+
+                    print "Hot wallet {} balance: {}".format(balance['currency'], balance['value'])
+                    if (float(trustline['reciprocated_limit']) != 0):
+                        print "Hot wallet {} liquidity: {}".format(balance['currency'], float(balance['value']) + float(trustline['reciprocated_limit']))
+
+
+            for currency in currencies:
+                # Determine order books for the cold wallet issued currency.  To do this we must find all market makers.
+                url = config_json['ripple_rest_api'] + 'v1/accounts/' + cold + '/trustlines?currency=' + currency
+                #print(url)
+                r = requests.get(url, verify=False)
+                trustlines = r.json()
+                
+                #pprint.pprint(trustlines)
+                
+                for trustline in trustlines['trustlines']:
+                    #pprint.pprint(trustline)
+                    mm = trustline['counterparty']
+                    
+                    url = config_json['ripple_rest_api'] + 'v1/accounts/' + mm + '/orders'
+                    #print(url)
+                    r = requests.get(url, verify=False)
+                    orders = r.json()
+                    #pprint.pprint(orders)
+
+                    if (orders['orders']):
+                        # diplay header
+                        print ""
+                        print "-" * 60
+                        print "Cold Wallet {}".format(cold)
+                        print "Market Maker {}".format(mm)
+                        print "Currency {}".format(currency)
+                        print "-" * 60
+
+
+                        for order in orders['orders']:
+                            if (order['taker_pays']['currency'] == currency and 
+                                order['taker_pays']['counterparty'] == cold):
+                                print "Offer {} {} for {} {}".format(order['taker_gets']['value'], order['taker_gets']['currency'], order['taker_pays']['value'], order['taker_pays']['currency'])
+                                # TODO: keep track of totals per currency and display summary.
+
+except KeyboardInterrupt:
+    print "You pressed Ctrl+C"
+    sys.exit(1)
+
+except socket.gaierror:
+    print 'Hostname could not be resolved. Exiting'
+    sys.exit(1)
+
+except socket.error:
+    print "Couldn't connect to server"
+    sys.exit(1)
+
+except urllib2.URLError as e:
+    print "Error requesting URL:"
+    print e
+    sys.exit(1)
+
+# Checking the time again
+t2 = datetime.now()
+
+# Calculates the difference of time, to see how long it took to run the script
+total =  t2 - t1
+
+# Printing the information to screen
+print ""
+print "=" * 60
+print 'Ripple Connect status check completed in: ', total
+print "-" * 60
