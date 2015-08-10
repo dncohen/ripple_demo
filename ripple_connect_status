@@ -43,7 +43,8 @@ try :
     filename = os.path.join(CONFIG_DIR, 'config.json')
     with open(filename) as data_file:
         config_json = json.load(data_file)
-    #pprint.pprint(config_json)
+    print "Using {} to inspect ledger.".format(config_json['ripple_rest_api'])
+
 
     for hot_wallet in entities_json['hot_wallets']:
         hot = hot_wallet['address']
@@ -62,7 +63,8 @@ try :
 
             #pprint.pprint(cold_wallet)
             cold = cold_wallet['address']
-            print "=" * 60
+            print ""
+            print "-" * 60
             print "Cold Wallet {}".format(cold)
             print "Hot Wallet {}".format(hot)
             print "-" * 60
@@ -108,9 +110,8 @@ try :
                         # diplay header
                         print ""
                         print "-" * 60
-                        print "Cold Wallet {}".format(cold)
                         print "Market Maker {}".format(mm)
-                        print "Currency {}".format(currency)
+                        print "Currency {}+{}".format(currency, cold)
                         print "-" * 60
 
 
