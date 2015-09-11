@@ -51,7 +51,7 @@ try :
     try :
         r = requests.get(url, verify=verify)
         version = r.json()
-        print "Ripple Connect {} running on {}".format(version['version'], url)
+        print "Version {} running on {}".format(version['version'], url)
     except:
         print "Ripple Connect not reachable at {} !!!".format(url)
 
@@ -126,7 +126,7 @@ try :
                         print ""
                         print "-" * 60
                         print "Market Maker  {0}".format(mm)
-                        print "Currency      {0}+{1}".format(currency, cold)
+                        print "Trading       {0}+{1}".format(currency, cold)
                         print "-" * 60
 
 
