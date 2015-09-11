@@ -16,6 +16,11 @@ import urllib2
 
 # now using this for http
 import requests
+# Don't enforce cert checks
+verify = False
+if not verify:
+    from requests.packages.urllib3.exceptions import InsecureRequestWarning
+    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 # Parse command line arguments
 import argparse
@@ -39,11 +44,21 @@ try :
     with open(filename) as data_file:
         entities_json = json.load(data_file)
     #pprint.pprint(entities_json)
-        
+
+    # Determine Ripple Connect version.
+    # Note that ripple connect always prepends https, never http, to domain
+    url = 'https://' + entities_json['domain']
+    try :
+        r = requests.get(url, verify=verify)
+        version = r.json()
+        print "Ripple Connect {} running on {}".format(version['version'], url)
+    except:
+        print "Ripple Connect not reachable at {} !!!".format(url)
+
     filename = os.path.join(CONFIG_DIR, 'config.json')
     with open(filename) as data_file:
         config_json = json.load(data_file)
-    print "Using {} to inspect ledger.".format(config_json['ripple_rest_api'])
+    print "Using ripple-rest at {} to inspect ledger.".format(config_json['ripple_rest_api'])
 
 
     for hot_wallet in entities_json['hot_wallets']:
@@ -52,7 +67,7 @@ try :
         # Test hot wallet balance
         url = config_json['ripple_rest_api'] + 'v1/accounts/' + hot + '/trustlines'
         #print(url)
-        r = requests.get(url, verify=False)
+        r = requests.get(url, verify=verify)
         trustlines = r.json()
 
         #pprint.pprint(trustlines)
@@ -65,8 +80,8 @@ try :
             cold = cold_wallet['address']
             print ""
             print "-" * 60
-            print "Cold Wallet {}".format(cold)
-            print "Hot Wallet {}".format(hot)
+            print "Cold Wallet   {}".format(cold)
+            print "Hot Wallet    {}".format(hot)
             print "-" * 60
 
             for trustline in trustlines['trustlines']:
@@ -76,7 +91,7 @@ try :
                     # Determine hot wallet liquidity for the cold wallet issued currency.
                     url = config_json['ripple_rest_api'] + 'v1/accounts/' + hot + '/balances?counterparty=' + trustline['counterparty'] + '&currency=' + trustline['currency']
                     #print(url)
-                    r = requests.get(url, verify=False)
+                    r = requests.get(url, verify=verify)
                     balances = r.json()
 
                     #pprint.pprint(balances)
@@ -91,18 +106,18 @@ try :
                 # Determine order books for the cold wallet issued currency.  To do this we must find all market makers.
                 url = config_json['ripple_rest_api'] + 'v1/accounts/' + cold + '/trustlines?currency=' + currency
                 #print(url)
-                r = requests.get(url, verify=False)
+                r = requests.get(url, verify=verify)
                 trustlines = r.json()
-                
+
                 #pprint.pprint(trustlines)
-                
+
                 for trustline in trustlines['trustlines']:
                     #pprint.pprint(trustline)
                     mm = trustline['counterparty']
-                    
+
                     url = config_json['ripple_rest_api'] + 'v1/accounts/' + mm + '/orders'
                     #print(url)
-                    r = requests.get(url, verify=False)
+                    r = requests.get(url, verify=verify)
                     orders = r.json()
                     #pprint.pprint(orders)
 
@@ -110,13 +125,13 @@ try :
                         # diplay header
                         print ""
                         print "-" * 60
-                        print "Market Maker {}".format(mm)
-                        print "Currency {}+{}".format(currency, cold)
+                        print "Market Maker  {0}".format(mm)
+                        print "Currency      {0}+{1}".format(currency, cold)
                         print "-" * 60
 
 
                         for order in orders['orders']:
-                            if (order['taker_pays']['currency'] == currency and 
+                            if (order['taker_pays']['currency'] == currency and
                                 order['taker_pays']['counterparty'] == cold):
                                 print "Offer {} {} for {} {}".format(order['taker_gets']['value'], order['taker_gets']['currency'], order['taker_pays']['value'], order['taker_pays']['currency'])
                                 # TODO: keep track of totals per currency and display summary.
