@@ -42,7 +42,7 @@ try :
 
     # Print a nice banner with information on which host we are about to scan
     print "=" * 60
-    print "Diagnose (a2fa6fb) for {} ".format(HOST)
+    print "Running Ripple diagnose for {} ".format(HOST)
     print "-" * 60
 
     # Tests to run locally (cannot be run remotely)
