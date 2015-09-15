@@ -48,7 +48,7 @@ try :
     # Tests to run locally (cannot be run remotely)
     if (HOST == 'localhost') :
         # https://help.ubuntu.com/community/CheckingYourUbuntuVersion
-        print subprocess.check_output(["lsb_release", "-a"])
+        #print subprocess.check_output(["lsb_release", "-a"])
 
         # Test firewall
         print ""
