@@ -1,5 +1,11 @@
 # Dependencies
 
+## RHEL / Centos
+
+~~~
+sudo yum install python-requests python-argparse
+~~~
+
 ## Ubuntu
 
 ~~~

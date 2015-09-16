@@ -51,14 +51,14 @@ try :
     try :
         r = requests.get(url, verify=verify)
         version = r.json()
-        print "Version {} running on {}".format(version['version'], url)
+        print "Version {0} running on {1}".format(version['version'], url)
     except:
-        print "Ripple Connect not reachable at {} !!!".format(url)
+        print "Ripple Connect not reachable at {0} !!!".format(url)
 
     filename = os.path.join(CONFIG_DIR, 'config.json')
     with open(filename) as data_file:
         config_json = json.load(data_file)
-    print "Using ripple-rest at {} to inspect ledger.".format(config_json['ripple_rest_api'])
+    print "Using ripple-rest at {0} to inspect ledger.".format(config_json['ripple_rest_api'])
 
 
     for hot_wallet in entities_json['hot_wallets']:
@@ -80,8 +80,8 @@ try :
             cold = cold_wallet['address']
             print ""
             print "-" * 60
-            print "Cold Wallet   {}".format(cold)
-            print "Hot Wallet    {}".format(hot)
+            print "Cold Wallet   {0}".format(cold)
+            print "Hot Wallet    {0}".format(hot)
             print "-" * 60
 
             for trustline in trustlines['trustlines']:
@@ -97,9 +97,9 @@ try :
                     #pprint.pprint(balances)
                     balance = balances['balances'][0]
 
-                    print "Hot wallet {} balance: {}".format(balance['currency'], balance['value'])
+                    print "Hot wallet {0} balance: {1}".format(balance['currency'], balance['value'])
                     if (float(trustline['reciprocated_limit']) != 0):
-                        print "Hot wallet {} liquidity: {}".format(balance['currency'], float(balance['value']) + float(trustline['reciprocated_limit']))
+                        print "Hot wallet {0} liquidity: {1}".format(balance['currency'], float(balance['value']) + float(trustline['reciprocated_limit']))
 
 
             for currency in currencies:
@@ -133,7 +133,7 @@ try :
                         for order in orders['orders']:
                             if (order['taker_pays']['currency'] == currency and
                                 order['taker_pays']['counterparty'] == cold):
-                                print "Offer {} {} for {} {}".format(order['taker_gets']['value'], order['taker_gets']['currency'], order['taker_pays']['value'], order['taker_pays']['currency'])
+                                print "Offer {0} {1} for {2} {3}".format(order['taker_gets']['value'], order['taker_gets']['currency'], order['taker_pays']['value'], order['taker_pays']['currency'])
                                 # TODO: keep track of totals per currency and display summary.
 
 except KeyboardInterrupt:

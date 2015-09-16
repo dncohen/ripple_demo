@@ -42,7 +42,7 @@ try :
 
     # Print a nice banner with information on which host we are about to scan
     print "=" * 60
-    print "Running Ripple diagnose for {} ".format(HOST)
+    print "Running Ripple diagnose for {0} ".format(HOST)
     print "-" * 60
 
     # Tests to run locally (cannot be run remotely)
@@ -53,16 +53,16 @@ try :
         # Test firewall
         print ""
         print "=" * 60
-        print "Testing firewall".format(HOST)
+        print "Testing firewall (for running rippled)".format(HOST)
         print "-" * 60
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(1)
         port = 51235
         result = sock.connect_ex(('r.ripple.com', port))
         if result == 0:
-            print "Port {}: \t Reached r.ripple.com:{}".format(port, port)
+            print "Port {0}: \t Reached r.ripple.com:{1}".format(port, port)
         else :
-            print "Port {}: \t Not open! Possible firewall issue!".format(port)
+            print "Port {0}: \t Not open! Possible firewall issue!".format(port)
         sock.close()
 
     # Following tests can be run remotely or locally.
@@ -70,7 +70,7 @@ try :
     # Test ports
     print ""
     print "=" * 60
-    print "Testing {} ports".format(HOST)
+    print "Testing {0} ports".format(HOST)
     print "-" * 60
 
     # Ports to check
@@ -86,13 +86,13 @@ try :
         port = portdata['port']
         result = sock.connect_ex((HOST, port))
         if result == 0:
-            print "Port {}: \t Open      \t {}".format(port, portdata['desc'])
+            print "Port {0}: \t Open      \t {1}".format(port, portdata['desc'])
 
             if port == RIPPLED_RPC_PORT:
                 rippledEnabled = True
 
         else :
-            print "Port {}: \t Not reachable \t {}".format(port, portdata['desc'])
+            print "Port {0}: \t Not reachable \t {1}".format(port, portdata['desc'])
         sock.close()
 
 
@@ -101,7 +101,7 @@ try :
         url = RIPPLED_RPC_PROTOCOL + '://' + HOST + ':' + str(RIPPLED_RPC_PORT)
         print ""
         print "=" * 60
-        print "Testing rippled on {}".format(url)
+        print "Testing rippled on {0}".format(url)
         print "-" * 60
 
         values = {
@@ -159,7 +159,7 @@ try :
     protocol = "http"
     print ""
     print "=" * 60
-    print "Testing ripple-rest on {}://{}:{}".format(protocol,HOST,port)
+    print "Testing ripple-rest on {0}://{1}:{2}".format(protocol,HOST,port)
     print "-" * 60
 
     try :
