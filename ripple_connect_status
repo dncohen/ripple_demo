@@ -61,6 +61,70 @@ try :
     print "Using ripple-rest at {0} to inspect ledger.".format(config_json['ripple_rest_api'])
 
 
+    # Inspect liquidity for each cold wallet.
+    for cold_wallet in entities_json['cold_wallets']:
+        cold = cold_wallet['address']
+
+        # Test cold wallet balance
+        url = config_json['ripple_rest_api'] + 'v1/accounts/' + cold + '/balances'
+        #print(url)
+        r = requests.get(url, verify=verify)
+        balances = r.json()
+
+        #pprint.pprint(balances)
+
+        cold = cold_wallet['address']
+        print ""
+        print "-" * 60
+        print "Cold Wallet   {0}".format(cold)
+        print "-" * 60
+
+        for balance in balances['balances']:
+            currency = balance['currency']
+            if (balance['currency'] == 'XRP'):
+                print "Cold wallet has {1} XRP.".format(cold, balance['value'])
+            else:
+                # Here, the counterparty is either a market maker or hot wallet.
+                mm = balance['counterparty']
+
+                url = config_json['ripple_rest_api'] + 'v1/accounts/' + mm + '/orders'
+                r = requests.get(url, verify=verify)
+                orders = r.json()
+                #pprint.pprint(orders)
+
+                if (orders['orders']):
+                    # diplay header
+                    print ""
+                    print "-" * 60
+                    print "Cold Wallet   {0}".format(cold)
+                    print "Market Maker  {0}".format(mm)
+                    print "-" * 60
+
+                    # Show all mm balances
+                    url = config_json['ripple_rest_api'] + 'v1/accounts/' + mm + '/balances'
+                    #print(url)
+                    r = requests.get(url, verify=verify)
+                    mm_balances = r.json()
+
+                    #pprint.pprint(mm_balances)
+
+                    for balance in mm_balances['balances']:
+                        print "Market maker has {1} {2}+{3}.".format(mm, balance['value'], balance['currency'], balance['counterparty'])
+
+                    print ""
+
+                    for order in orders['orders']:
+                        if (order['taker_pays']['currency'] == currency and
+                            order['taker_pays']['counterparty'] == cold):
+                            print "Offer {0} {1} for {2} {3}".format(order['taker_gets']['value'], order['taker_gets']['currency'], order['taker_pays']['value'], order['taker_pays']['currency'])
+
+                    for order in orders['orders']:
+                        if (order['taker_gets']['currency'] == currency and
+                            order['taker_gets']['counterparty'] == cold):
+                            print "Offer {0} {1} for {2} {3}".format(order['taker_gets']['value'], order['taker_gets']['currency'], order['taker_pays']['value'], order['taker_pays']['currency'])
+                            # TODO: keep track of totals per currency and display summary.
+
+
     for hot_wallet in entities_json['hot_wallets']:
         hot = hot_wallet['address']
 
@@ -102,39 +166,6 @@ try :
                         print "Hot wallet {0} liquidity: {1}".format(balance['currency'], float(balance['value']) + float(trustline['reciprocated_limit']))
 
 
-            for currency in currencies:
-                # Determine order books for the cold wallet issued currency.  To do this we must find all market makers.
-                url = config_json['ripple_rest_api'] + 'v1/accounts/' + cold + '/trustlines?currency=' + currency
-                #print(url)
-                r = requests.get(url, verify=verify)
-                trustlines = r.json()
-
-                #pprint.pprint(trustlines)
-
-                for trustline in trustlines['trustlines']:
-                    #pprint.pprint(trustline)
-                    mm = trustline['counterparty']
-
-                    url = config_json['ripple_rest_api'] + 'v1/accounts/' + mm + '/orders'
-                    #print(url)
-                    r = requests.get(url, verify=verify)
-                    orders = r.json()
-                    #pprint.pprint(orders)
-
-                    if (orders['orders']):
-                        # diplay header
-                        print ""
-                        print "-" * 60
-                        print "Market Maker  {0}".format(mm)
-                        print "Trading       {0}+{1}".format(currency, cold)
-                        print "-" * 60
-
-
-                        for order in orders['orders']:
-                            if (order['taker_pays']['currency'] == currency and
-                                order['taker_pays']['counterparty'] == cold):
-                                print "Offer {0} {1} for {2} {3}".format(order['taker_gets']['value'], order['taker_gets']['currency'], order['taker_pays']['value'], order['taker_pays']['currency'])
-                                # TODO: keep track of totals per currency and display summary.
 
 except KeyboardInterrupt:
     print "You pressed Ctrl+C"
