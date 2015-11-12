@@ -61,7 +61,13 @@ try :
 
     # RC 2.2.x no longer uses ripple_rest.
     if (config_json.has_key('ripple_rest_api')) :
-        print "Using ripple-rest at {0} to inspect ledger.".format(config_json['ripple_rest_api'])
+        ripple_rest_url = config_json['ripple_rest_api']
+    else :
+        # todo make it possible to use altnet or custom rest url.
+        ripple_rest_url = "https://api.ripple.com/"
+
+    if (ripple_rest_url) :
+        print "Using ripple-rest at {0} to inspect ledger.".format(ripple_rest_url)
 
 
         # Inspect liquidity for each cold wallet.
@@ -69,7 +75,7 @@ try :
             cold = cold_wallet['address']
 
             # Test cold wallet balance
-            url = config_json['ripple_rest_api'] + 'v1/accounts/' + cold + '/balances'
+            url = ripple_rest_url + 'v1/accounts/' + cold + '/balances'
 
             r = requests.get(url, verify=verify)
             balances = r.json()
@@ -88,7 +94,7 @@ try :
                     # Here, the counterparty is either a market maker or hot wallet.
                     mm = balance['counterparty']
 
-                    url = config_json['ripple_rest_api'] + 'v1/accounts/' + mm + '/orders'
+                    url = ripple_rest_url + 'v1/accounts/' + mm + '/orders'
                     r = requests.get(url, verify=verify)
                     orders = r.json()
 
@@ -101,7 +107,7 @@ try :
                         print "-" * 60
                         
                         # Show all mm balances
-                        url = config_json['ripple_rest_api'] + 'v1/accounts/' + mm + '/balances'
+                        url = ripple_rest_url + 'v1/accounts/' + mm + '/balances'
 
                         r = requests.get(url, verify=verify)
                         mm_balances = r.json()
@@ -127,7 +133,7 @@ try :
             hot = hot_wallet['address']
 
             # Test hot wallet balance
-            url = config_json['ripple_rest_api'] + 'v1/accounts/' + hot + '/trustlines'
+            url = ripple_rest_url + 'v1/accounts/' + hot + '/trustlines'
 
             r = requests.get(url, verify=verify)
             trustlines = r.json()
@@ -149,7 +155,7 @@ try :
                         currencies.append(trustline['currency'])
                         
                         # Determine hot wallet liquidity for the cold wallet issued currency.
-                        url = config_json['ripple_rest_api'] + 'v1/accounts/' + hot + '/balances?counterparty=' + trustline['counterparty'] + '&currency=' + trustline['currency']
+                        url = ripple_rest_url + 'v1/accounts/' + hot + '/balances?counterparty=' + trustline['counterparty'] + '&currency=' + trustline['currency']
 
                         r = requests.get(url, verify=verify)
                         balances = r.json()
