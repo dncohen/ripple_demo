@@ -1,0 +1,357 @@
+#!/usr/bin/env node --harmony_generators
+
+console.log("Ripple wallet decommission helper, at your service.");
+
+// debug output
+var debug = require('debug')('decommission');
+
+// Prompt for input
+var co = require('co');
+var prompt = require('co-prompt');
+
+// Read config file.
+var path = require('path');
+var programName = path.basename(process.argv[1]);
+
+var fs = require('fs');
+var ini = require('ini');
+
+var conf = ini.parse(fs.readFileSync(programName + '.conf', 'utf-8'));
+
+//console.log(conf);
+
+// Read command line args.
+var commander = require('commander');
+
+commander
+  .usage('[options] <account> [otherAccounts...]')
+  .option('-a, --altnet', 'Use the altnet (' + conf['altnet']['rippled'] +') instead of live net (' + conf[programName]['rippled'] + ').')
+  .option('-x, --xrp [account]', 'Send available XRP to [account]', conf[programName]['xrp-account'])
+  .parse(process.argv);
+
+if (commander.altnet) {
+  // Override normal settings, use altnet instead.
+  for (var key in conf['altnet']) {
+    conf[programName][key] = conf['altnet'][key];
+  }
+}
+
+if (commander.args.length == 0) {
+  console.error("You must specify one or more wallets to decommission.  Use \"--help\" for usage.");
+  process.exit(1);
+}
+
+console.log(commander.args);
+
+
+//const util = require('util');
+//const Promise = require('bluebird');
+const RippleAPI = require('ripple-lib').RippleAPI;
+
+// Values we don't know yet, but will need to keep track of:
+var serverInfo = {};
+
+debug("Constructing RippleAPI...");
+const ripple = new RippleAPI({
+  server: conf[programName]['rippled']
+});
+debug("Constructed.  Connecting to " + conf[programName]['rippled'] + "...");
+
+ripple.connect().then(function() {
+  return ripple.getServerInfo().then(function(info) {
+    debug(info);
+    // Remember this info for later.
+    serverInfo = info;
+
+    console.log("Connected to %s, running version %s.", conf[programName]['rippled'], serverInfo.buildVersion);
+
+    if (!serverInfo.validatedLedger) {
+      console.error("No validated ledger found!");
+      process.exit(1);
+    }
+  });
+}).then(function() {
+
+  // Decommission wallets in parallel.  We don't do this, because the prompts compete with one another.
+  //results = commander.args.map(decommissionWallet);
+  //return Promise.all(results);
+
+  // We use this construct to yield.  That is, wait for one wallet to be decommissioned before attempting the next.
+  return co(function *() {
+    // Decommission each wallet
+    for (var i = 0; i < commander.args.length; i++) {
+      //debug(commander.args[i]);
+      result = yield decommissionWallet(commander.args[i]);
+    }
+  });
+}).then(function() {
+  console.log("disconnecting...");
+  ripple.disconnect();
+  console.log('done.');
+  process.exit();
+}).catch(function(error) {
+  debug(error);
+  console.error(error);
+  process.exit(-1);
+});
+
+
+function decommissionWallet(address) {
+  console.log("--------------- Decommissioning " + address + " -----------------------");
+
+  return ripple.getAccountInfo(address).then(function(account) {
+    debug(account);
+    // Start by getting the account info.
+    return co(function *() {
+      console.log("Account " + address + " has " + account.xrpBalance + " XRP, and owner count is " + account.ownerCount + ".");
+      debug(account.xrpBalance);
+      debug(serverInfo);
+      debug(serverInfo.validatedLedger.reserveBaseXRP);
+      if (account.ownerCount || (commander.xrp && Number(account.xrpBalance) > Number(serverInfo.validatedLedger.reserveBaseXRP))) {
+        // If there is something to decommission, we will need the account's secret.
+        // We prompt for it now, before signing preparing any tx.  If we wait until time to sign a tx, the lastLedgerSequence will pass while the secret is being entered.
+        yield getSecret(address);
+      }
+      else {
+        debug("Nothing to do for " + address);
+      }
+    });
+  }).then(function() {
+    return ripple.getOrders(address).then(function(orders) {
+      console.log(orders);
+    }).catch(function(error) {
+      console.error("Could not get order for " + address + ": " + error);
+    });
+  }).then(function() {
+    console.log("here");
+    return decommissionWalletTrustlines(address);
+  }).then(function() {
+    // Revisit account info.  If decomission worked, the owner count should be 0.
+    // Needs re-work.  At this point, previously submitted transactions have not been validated.
+    return ripple.getAccountInfo(address).then(function(account) {
+      returnMe = null;
+      debug(account);
+      console.log("After decommision, account " + address + " has " + account.xrpBalance + " XRP, and owner count is " + account.ownerCount + ".");
+      if (account.ownerCount) {
+        console.error("Decommission of " + address + " did not eliminate owner count and XRP balance!");
+      }
+      else if (Number(account.xrpBalance) > Number(serverInfo.validatedLedger.reserveBaseXRP)) { // TODO: safe to call Number() ?  Need ripple-lib-value???
+        // If owner count is 0, safe to return XRP.
+        if (commander.xrp) {
+          debug("Returning XRP to " + commander.xrp);
+          payment = {
+            source: {
+              address: address,
+              maxAmount: {
+                currency: 'XRP',
+                value: (Number(account.xrpBalance) - Number(serverInfo.validatedLedger.reserveBaseXRP)).toString()
+              },
+            },
+            destination: {
+              address: commander.xrp,
+              amount: {
+                currency: 'XRP',
+                value: (Number(account.xrpBalance) - Number(serverInfo.validatedLedger.reserveBaseXRP)).toString()
+              }
+            },
+            // Partial payment, because reserve will be held back.
+            //allowPartialPayment: true
+          };
+          // Last transaction for this account.  No need to yeild here.
+          debug(payment.source);
+          returnMe = ripple.preparePayment(address, payment, getTxInstructions()).then(function(prepared) {
+            return decommissionWalletSignSubmit(address, prepared);
+          });
+        }
+        console.log("Decommissioned " + address);
+      }
+      console.log("--------------- End " + address + " -----------------------");
+      console.log(""); // blank line.
+      return returnMe;
+    });
+  });
+}
+
+function decommissionWalletTrustlines(address) {
+
+  var hasTrustlines = 0; // deprecated
+  var hasBalances = 0; // deprecated
+
+  var balances = []; // Balances to be returned.
+  var trustlines = []; // Trust lines to be zeroed out.
+  var trustlinesTx = [];
+  var settings = {};
+
+  return ripple.getTrustlines(address).then(function(tlines) {
+    for (var i = 0; i < tlines.length; i++) {
+      trustline = tlines[i]['specification'];
+      counterparty = tlines[i]['counterparty'];
+      state = tlines[i]['state'];
+      debug(tlines[i]);
+      console.log("Trustline: Wallet " + address + " holds " + state['balance'] + " " + trustline['currency'] + "." + trustline['counterparty']);
+      if (Number(state['balance']) > 0) {
+        // A positive Balance can be returned.
+        balances.push(tlines[i]);
+        hasBalances++;
+      }
+
+      // A non-zero trustline can be deleted.  Or if flags are set.
+      if (Number(trustline['limit']) > 0 || ('authorized' in trustline) || ('ripplingDisabled' in trustline) || ('qualityIn' in trustline)) {
+        trustlines.push(tlines[i]);
+        hasTrustlines++;
+      }
+    }
+  }).then(function() {
+    if (balances.length > 0) {
+      return co(function *() {
+        var doit = yield prompt.confirm('Return ' + balances.length + ' balances? ');
+        if (doit) {
+          for (var i = 0; i < balances.length; i++) {
+            // Our "balance" is actually the data returned from getTrustlines.
+            balance = balances[i];
+            debug(balance);
+            payment = {
+              source: {
+                address: address,
+                maxAmount: {
+                  currency: balance['specification']['currency'],
+                  counterparty: balance['specification']['counterparty'],
+                  value: balance['state']['balance']
+                },
+              },
+              destination: {
+                address: balance['specification']['counterparty'],
+                // We can specify source amount and destination minAmount because zeroing out a trust line should be exact.
+                amount: {
+                  currency: balance['specification']['currency'],
+                  counterparty: balance['specification']['counterparty'],
+                  value: balance['state']['balance']
+                }
+              },
+              allowPartialPayment: false
+            };
+            debug(payment);
+            debug(payment.source);
+            // Important to yield so that prepared tx get unique sequence number!
+            yield ripple.preparePayment(address, payment, getTxInstructions()).then(function(prepared) {
+              debug(prepared);
+              return decommissionWalletSignSubmit(address, prepared);
+            });
+          }
+        }
+      });
+    }
+  }).then(function() {
+    if (trustlines.length > 0) {
+      return ripple.getSettings(address).then(function(s) {
+        // We need to know defaultRipple in order to zero out a trust line.
+        settings = s;
+        debug(settings);
+      });
+    }
+  }).then(function() {
+    if (trustlines.length > 0) {
+      return co(function *() {
+        ps = [];
+        var doit = yield prompt.confirm('Undo ' + trustlines.length + ' trustlines? ');
+        console.log(doit);
+        if (doit) {
+          console.log('here');
+          for (var i = 0; i < trustlines.length; i++) {
+            trustline = trustlines[i];
+            debug("deleting...");
+            debug(trustline);
+            // Get the currency, counterparty.
+            t = trustline['specification'];
+            // Zero out the rest.
+            t['limit'] = '0';
+            t['ripplingDisabled'] = (!settings.defaultRipple); // Tricksy hobbits!
+            t['authorized'] = false;
+            t['frozen'] = false;
+            t['qualityIn'] = 1.0;
+            t['qualityOut'] = 1.0;
+
+            // Important to yield.  Otherwise all prepared tx will get the same sequence number!
+            p = yield ripple.prepareTrustline(address, t, getTxInstructions()).then(function(prepared) {
+              debug("prepared:");
+              debug(prepared);
+              return decommissionWalletSignSubmit(address, prepared);
+              //return decommisionSignSubmitWrapper(address, prepared);
+            });
+            ps.push(p);
+          }
+        }
+        return Promise.all(ps);
+      });
+    }
+  });
+}
+
+// This hack to is make a maxLedgerVersionOffset long enough for user to type in secret.  Code needs reworking.
+function getTxInstructions() {
+  return {
+    //maxLedgerVersionOffset: 1000 // No longer needed?
+  };
+}
+
+var secrets = {};
+function getSecret(address) {
+  /*
+  if (address in secrets) {
+    // We already know this secret.
+    return new Promise(function(resolve, reject) {
+      return resolve(secrets[address]);
+    });
+  }
+  */
+  if (!(address in secrets)) {
+    // Prompt for secret.
+    secrets[address] = co(function *() {
+      ps = [];
+      var secret = yield prompt.password('Secret key for ' + address + ' : ');
+      secrets[address] = secret;
+      debug(secrets);
+      return secret;
+    });
+    // secrets[address] is a promise, until it becomes a secret!
+    return secrets[address];
+  }
+  else {
+    return Promise.resolve(secrets[address]);
+  }
+}
+
+function decommissionWalletSignSubmit(address, prepared) {
+  var secret = false;
+  return getSecret(address).then(function(s) {
+    secret = s;
+  }).then(function() {
+    try {
+      signed = ripple.sign(prepared.txJSON, secret);
+      return ripple.submit(signed.signedTransaction).then(function(result) {
+        debug(prepared);
+        debug(result);
+        if (result.resultCode != 'tesSUCCESS') {
+          console.error(result.resultCode + ": " + result.resultMessage);
+          console.error("Failed to submit " + prepared.txJSON);
+        }
+        else {
+          console.log(result.resultCode + ": " + result.resultMessage);
+        }
+      });
+
+    }
+    catch (err) {
+      console.error(err);
+    }
+  });
+}
+
+/*
+var decommisionSignSubmitWrapper = co.wrap(function* (address, prepared) {
+  var result = yield decommissionWalletSignSubmit(address, prepared);
+  debug("decommisionSignSubmitWrapper");
+  debug(result);
+  return result;
+});
+*/
