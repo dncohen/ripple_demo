@@ -24,8 +24,13 @@ var commander = require('commander');
 commander
   .usage('[options] <account> [otherAccounts...]')
   .option('-a, --altnet', 'Use the altnet (' + conf['altnet']['rippled'] +') instead of live net (' + conf[programName]['rippled'] + ').')
-  .option('-x, --xrp [account]', 'Send available XRP to [account]', conf[programName]['xrp-account'])
+  .option('-x, --xrp', 'Send available XRP to ' + conf[programName]['xrp-account'] + ' (live net) or ' + conf['altnet']['xrp-account'] + ' (altnet)')
   .parse(process.argv);
+
+// Note originally the --xrp argument above took an address.  This is
+// confusing when the parameter that follow are also addresses.  So
+// the address must be congfigured in decommission.conf instead of
+// appearing on command line.
 
 if (commander.altnet) {
   // Override normal settings, use altnet instead.
@@ -33,6 +38,7 @@ if (commander.altnet) {
     conf[programName][key] = conf['altnet'][key];
   }
 }
+
 
 if (commander.args.length == 0) {
   console.error("You must specify one or more wallets to decommission.  Use \"--help\" for usage.");
@@ -51,7 +57,7 @@ var serverInfo = {};
 var lastValidatedLedger = 0;
 var maxLastLedger = 0; // Keep track of the lastLedgerSequence that we will need to wait until.
 var accountSequences = {};
-
+var accountSettings = {}; // We need to know default ripple when analyzing trust lines.
 
 debug("Constructing RippleAPI...");
 const ripple = new RippleAPI({
@@ -115,28 +121,31 @@ ripple.connect().then(function() {
 });
 
 function waitForLedgers() {
-  return new Promise(function (resolve, reject) {
-    (function waitForIt() {
-      if (maxLastLedger == 0 || lastLedgerSequence > maxLastLedger) {
-        return resolve();
-      }
-      else {
-        debug("waiting for ledger " + maxLastLedger + ", currently " + lastLedgerSequence);
-        setTimeout(waitForIt, 1000);
-      }
-    })();
-  });
+  if (maxLastLedger > 0 && lastValidatedLedger <= maxLastLedger) {
+    console.log("Waiting for transactions to appear in validated ledger...");
+
+    return new Promise(function (resolve, reject) {
+      (function waitForIt() {
+        if (maxLastLedger == 0 || lastValidatedLedger > maxLastLedger) {
+          return resolve();
+        }
+        else {
+          debug("waiting for ledger " + maxLastLedger + ", currently " + lastValidatedLedger);
+          setTimeout(waitForIt, 1000);
+        }
+      })();
+    });
+  }
 }
 
 /**
  * Return as much XRP as possible from a wallet.
  * Cannot return 100%.  The minimum reserve requirement prevents 100% return.
+ * Also display a confirmation that owner count has been zeroed out.
  */
 function decommissionWalletXRP(address) {
   // First check that owner count is 0.  If not, we want some XRP left over to sign transactions that close our account.  So, if owner count > 0, don't return XRP.
-
   return ripple.getAccountInfo(address).then(function(account) {
-    console.log("--------------- Returning XRP " + address + " -----------------------");
     returnMe = null;
     console.log("After decommission, account " + address + " has " + account.xrpBalance + " XRP, and owner count is " + account.ownerCount + ".");
     if (account.ownerCount) {
@@ -149,7 +158,8 @@ function decommissionWalletXRP(address) {
     else if (Number(account.xrpBalance) > Number(serverInfo.validatedLedger.reserveBaseXRP)) { // TODO: safe to call Number() ?  Need ripple-lib-value???
       // If owner count is 0, safe to return XRP.
       if (commander.xrp) {
-        debug("Returning XRP to " + commander.xrp);
+        xrpAddress = conf[programName]['xrp-account'];
+        debug("Returning XRP to " + xrpAddress);
         payment = {
           source: {
             address: address,
@@ -159,7 +169,7 @@ function decommissionWalletXRP(address) {
             },
           },
           destination: {
-            address: commander.xrp,
+            address: xrpAddress,
             amount: {
               currency: 'XRP',
               value: (Number(account.xrpBalance) - Number(serverInfo.validatedLedger.reserveBaseXRP)).toString()
@@ -169,13 +179,11 @@ function decommissionWalletXRP(address) {
 
         debug(payment.source);
         returnMe = ripple.preparePayment(address, payment, getTxInstructions(address)).then(function(prepared) {
+          console.log("Returning " + payment.destination.amount.value + " XRP from " + address + " to " + xrpAddress + ".");
           return decommissionWalletSignSubmit(address, prepared);
         });
       }
-      console.log("Returned " + payment.destination.amount.value + " XRP from " + address + " to " + commander.xrp + ".");
     }
-    console.log("--------------- End XRP " + address + " -----------------------");
-    console.log(""); // blank line.
     return returnMe;
   });
 
@@ -187,7 +195,10 @@ function decommissionWalletXRP(address) {
 function decommissionWallet(address) {
   console.log("--------------- Decommissioning owner count " + address + " -----------------------");
 
-  return ripple.getAccountInfo(address).then(function(account) {
+  var account = {};
+
+  return ripple.getAccountInfo(address).then(function(a) {
+    account = a;
     debug(account);
 
     // We keep track of incremental sequence number when preparing tx.
@@ -209,9 +220,13 @@ function decommissionWallet(address) {
       }
     });
   }).then(function() {
-    return decommissionWalletOrders(address);
+    if (account.ownerCount > 0) {
+      return decommissionWalletOrders(address);
+    }
   }).then(function() {
-    return decommissionWalletTrustlines(address);
+    if (account.ownerCount > 0) {
+      return decommissionWalletTrustlines(address);
+    }
   }).then(function() {
     console.log("--------------- End owner count " + address + " -----------------------");
     console.log(""); // blank line.
@@ -259,23 +274,38 @@ function decommissionWalletTrustlines(address) {
   var trustlines = []; // Trust lines to be zeroed out.
   var settings = {}; // Account settings; we need to know default ripple in order to zero out a trust line.
 
-  return ripple.getTrustlines(address).then(function(tlines) {
-    for (var i = 0; i < tlines.length; i++) {
-      trustline = tlines[i]['specification'];
-      counterparty = tlines[i]['counterparty'];
-      state = tlines[i]['state'];
-      debug(tlines[i]);
-      console.log("Trustline: Wallet " + address + " holds " + state['balance'] + " " + trustline['currency'] + "." + trustline['counterparty']);
-      if (Number(state['balance']) > 0) {
-        // A positive Balance can be returned.
-        balances.push(tlines[i]);
-      }
+  return ripple.getSettings(address).then(function(s) {
+    // We need to know defaultRipple in order to zero out a trust line.
+    // Note: everything getSettings returns is optional.  So it is quite normal to get an empty object!
+    settings = s;
+    debug("SETTINGS:");
+    debug(settings);
+    debug(s);
+  }).then(function() {
+    return ripple.getTrustlines(address).then(function(tlines) {
+      for (var i = 0; i < tlines.length; i++) {
+        trustline = tlines[i]['specification'];
+        counterparty = tlines[i]['counterparty'];
+        state = tlines[i]['state'];
+        debug(tlines[i]);
+        console.log("Trustline: Wallet " + address + " holds " + state['balance'] + " " + trustline['currency'] + "." + trustline['counterparty']);
+        if (Number(state['balance']) > 0) {
+          // A positive Balance can be returned.
+          balances.push(tlines[i]);
+        }
 
-      // A non-zero trustline can be deleted.  Or if flags are set.
-      if (Number(trustline['limit']) > 0 || ('authorized' in trustline) || ('ripplingDisabled' in trustline) || ('qualityIn' in trustline)) {
-        trustlines.push(tlines[i]);
+        // A non-zero trustline can be deleted.  Or if flags are set.
+        // ripplingDisabled and defaultRipple are next to impossible to figure out.
+        if (Number(trustline['limit']) > 0 ||
+            ('authorized' in trustline) ||
+            // note that !foo != !bar is foo XOR bar.
+            // This was fun to figure out.
+            (!('ripplingDisabled' in trustline) != ('defaultRipple' in settings)) ||
+            ('qualityIn' in trustline)) {
+          trustlines.push(tlines[i]);
+        }
       }
-    }
+    });
   }).then(function() {
     if (balances.length > 0) {
       return co(function *() {
@@ -318,14 +348,6 @@ function decommissionWalletTrustlines(address) {
     }
   }).then(function() {
     if (trustlines.length > 0) {
-      return ripple.getSettings(address).then(function(s) {
-        // We need to know defaultRipple in order to zero out a trust line.
-        settings = s;
-        debug(settings);
-      });
-    }
-  }).then(function() {
-    if (trustlines.length > 0) {
       return co(function *() {
         ps = [];
         var doit = yield prompt.confirm('Undo ' + trustlines.length + ' trustlines? ');
@@ -338,7 +360,9 @@ function decommissionWalletTrustlines(address) {
             t = trustline['specification'];
             // Zero out the rest.
             t['limit'] = '0';
-            t['ripplingDisabled'] = (!settings.defaultRipple); // Tricksy hobbits!
+
+            t['ripplingDisabled'] = !('defaultRipple' in settings); // Tricksy hobbits!
+
             t['authorized'] = false;
             t['frozen'] = false;
             t['qualityIn'] = 1.0;
