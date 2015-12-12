@@ -1,4 +1,4 @@
-#!/usr/bin/env node --harmony_generators
+#!/usr/bin/env node --harmony
 
 // debug output
 var debug = require('debug')('decommission');
